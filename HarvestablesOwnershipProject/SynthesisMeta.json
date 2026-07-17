@@ -2,7 +2,7 @@
   "Nickname": "HarvestablesOwnership",
   "Visibility": "Visible",
   "OneLineDescription": "A synthesis patcher that scans your loadorder for unowned harvestables in suitable locations and asigns ownership to a reasonable faction when possible.",
-  "LongDescription": "",
+  "LongDescription": "A synthesis patcher that scans your loadorder for unowned harvestables in suitable locations and asigns ownership to a reasonable faction when possible.",
   "PreferredAutoVersioning": "Default",
   "RequiredMods": [],
   "TargetedReleases": [
