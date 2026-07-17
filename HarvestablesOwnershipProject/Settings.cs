@@ -81,12 +81,12 @@ namespace HarvestablesOwnership
         [JsonProperty]
         public List<string> ExcludeLocTypeRules { get; set; } =
         [
-            "Dungeon", "AnimalDen", "Bandit", "Dragon", "Draugr", "Dwarven",
+            "Dungeon", "AnimalDen", "Bandit", "DragonLair", "Draugr", "Dwarven",
             "Falmer", "Giant", "Hagraven", "Spriggan", "Vampire", "Warlock",
             "Werewolf", "Forsworn", "Cave", "Ruin", "PlayerHouse", "Lair",
         ];
 
-        [DisplayName("Plugin overrides (Plugin name -> Faction EditorID)")]
+        [DisplayName("Plugin overrides (Plugin name contains -> Faction EditorID)")]
         [Description("harvestables placed by a matching plugin are assigned to the given faction, taking precedence over location-based matching.")]
         [JsonProperty]
         public List<PluginFactionOverrideEntry> PluginFactionOverrides { get; set; } =
