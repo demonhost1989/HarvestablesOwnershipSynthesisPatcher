@@ -1,6 +1,4 @@
-﻿using DynamicData;
-using HarvestablesOwnership;
-using Mutagen.Bethesda;
+﻿using Mutagen.Bethesda;
 using Mutagen.Bethesda.Plugins;
 using Mutagen.Bethesda.Plugins.Cache;
 using Mutagen.Bethesda.Plugins.Records;
@@ -10,7 +8,7 @@ using Newtonsoft.Json;
 using Noggog;
 
 
-namespace CropOwnership
+namespace HarvestablesOwnership
 {
     public class Program
     {
