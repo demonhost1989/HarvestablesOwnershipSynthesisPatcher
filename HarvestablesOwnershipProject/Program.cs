@@ -31,9 +31,9 @@ namespace HarvestablesOwnership
             return JsonConvert.DeserializeObject<Settings>(json, SettingsJsonOptions) ?? new Settings();
         }
 
-        public void Save(string path)
+        public static void Save(Settings settings, string path)
         {
-            var json = JsonConvert.SerializeObject(this, Newtonsoft.Json.Formatting.Indented);
+            var json = JsonConvert.SerializeObject(settings, Newtonsoft.Json.Formatting.Indented);
             File.WriteAllText(path, json);
         }
 
@@ -90,9 +90,9 @@ namespace HarvestablesOwnership
         }
 
         // Partial-match (substring) plugin exclusion.
-        private static bool IsPluginExcluded(string pluginName)
+        private static bool IsPluginExcluded(string pluginName, Settings settings)
         {
-            return Settings.ExcludePlugins.Any(pattern =>
+            return settings.ExcludePlugins.Any(pattern =>
                 pluginName.Contains(pattern, StringComparison.OrdinalIgnoreCase));
         }
 
@@ -727,7 +727,7 @@ namespace HarvestablesOwnership
                     continue;
                 }
 
-                if (IsPluginExcluded(pluginName))
+                if (IsPluginExcluded(pluginName, settings))
                 {
                     if (!excludedCropsByPlugin.TryGetValue(pluginName, out var list))
                         excludedCropsByPlugin[pluginName] = list = [];
