@@ -47,7 +47,7 @@ namespace HarvestablesOwnership
         public List<string> IncludeHarvestableTerms { get; set; } =
         [
             "Wheat", "Potato", "Cabbage", "Leek", "Gourd", "Garlic", "Tomato", "Salmon", "Fish", "Wallmounted", "DTA", "HayBale",
-            "Pumpkin", "Carrot", "ChickenNest", "Hanging", "Harvest", "ElvesEar", "FrostMirriam", "Snowberry", "Antler", "Skull",
+            "Pumpkin", "Carrot", "ChickenNest", "Hanging", "Harvest", "ElvesEar", "FrostMirriam", "SnowberryWreath", "Antler", "Skull",
         ];
 
         [DisplayName("Names to exclude")]
