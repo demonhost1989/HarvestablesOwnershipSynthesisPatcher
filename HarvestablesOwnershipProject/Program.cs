@@ -1,4 +1,4 @@
-﻿using Mutagen.Bethesda;
+using Mutagen.Bethesda;
 using Mutagen.Bethesda.Plugins;
 using Mutagen.Bethesda.Plugins.Cache;
 using Mutagen.Bethesda.Plugins.Records;
@@ -120,7 +120,8 @@ namespace HarvestablesOwnership
         public static (LocationCategory category, ILocationGetter? matched) CategorizeLocation(
             ILocationGetter? location,
             ILinkCache<ISkyrimMod, ISkyrimModGetter> linkCache,
-            ICellGetter? cell)
+            ICellGetter? cell,
+            HashSet<string>? precomputedLocTypeKeywordEdids = null)
         {
             // Location-based keyword detection. Substring matching, because the real keyword
             // EditorIDs are "LocTypeFarm", "LocTypeTown", etc. — an exact set lookup of "Farm"
@@ -128,9 +129,13 @@ namespace HarvestablesOwnership
             // locations also carry unrelated keyword data (Civil War flags, world-interaction
             // flags like "WIDragonAttacked") that can share vocabulary with these terms without
             // meaning the same thing.
+            //
+            // If the caller already resolved this location's LocType keywords (e.g. for the
+            // exclusion-rule check), it's passed in here so we don't resolve every keyword
+            // FormKey through the link cache a second time for the same location.
             if (location != null)
             {
-                var keywordEdids = location.Keywords?
+                var keywordEdids = precomputedLocTypeKeywordEdids ?? location.Keywords?
                     .Select(k => k.TryResolve(linkCache)?.EditorID)
                     .Where(e => e != null && e.StartsWith("LocType", StringComparison.OrdinalIgnoreCase))
                     .Select(e => e!)
@@ -219,27 +224,36 @@ namespace HarvestablesOwnership
         // logic alone.
         private static Dictionary<string, string> ConventionOverrides = new(StringComparer.OrdinalIgnoreCase);
 
+        // Same entries as ConventionOverrides, pre-sorted longest-key-first once per run (in
+        // PopulateConventionOverrides) instead of being re-sorted via LINQ on every single
+        // TryFindPartialConventionOverride call. Since crop placements are processed by the
+        // thousands and each can probe several candidate strings, re-sorting per call was one
+        // of the hotter allocations in the patch loop.
+        private static List<KeyValuePair<string, string>> ConventionOverridesByKeyLengthDesc = [];
+
         // Finds a convention override for a given EditorID using partial (substring, either
         // direction) matching. The longest matching key wins, so a specific key like
-        // "KynesgroveFarmsLocationTGCoKG" beats a broad one like "Kynesgrove".
+        // "KynesgroveFarmsLocationTGCoKG" beats a broad one like "Kynesgrove". Because the list
+        // is already sorted longest-key-first, the first match found is the longest match —
+        // same result as the old Where().OrderByDescending().FirstOrDefault(), just without
+        // re-sorting every time.
         private static bool TryFindPartialConventionOverride(string editorId, out string factionEdid)
         {
             factionEdid = string.Empty;
             if (string.IsNullOrWhiteSpace(editorId))
                 return false;
 
-            var match = ConventionOverrides
-                .Where(kvp => !string.IsNullOrEmpty(kvp.Key)
-                    && (editorId.Contains(kvp.Key, StringComparison.OrdinalIgnoreCase)
-                        || kvp.Key.Contains(editorId, StringComparison.OrdinalIgnoreCase)))
-                .OrderByDescending(kvp => kvp.Key.Length)
-                .FirstOrDefault();
+            foreach (var kvp in ConventionOverridesByKeyLengthDesc)
+            {
+                if (editorId.Contains(kvp.Key, StringComparison.OrdinalIgnoreCase)
+                    || kvp.Key.Contains(editorId, StringComparison.OrdinalIgnoreCase))
+                {
+                    factionEdid = kvp.Value;
+                    return true;
+                }
+            }
 
-            if (string.IsNullOrEmpty(match.Value))
-                return false;
-
-            factionEdid = match.Value;
-            return true;
+            return false;
         }
 
         // Resolves an override's faction EditorID to an actual faction record (exact first, then fuzzy).
@@ -277,6 +291,12 @@ namespace HarvestablesOwnership
         private static readonly string[] LocationNameSuffixes =
             ["Farm", "House", "Meadery", "Mill", "Village", "Stead", "Hold", "Location", "Exterior", "Interior", "Faction"];
 
+        // Memo cache for TryFuzzyFactionMatch, cleared once per run (see RunPatch). The same
+        // handful of base-name terms (e.g. "Riverwood", "Whiterun") get probed over and over
+        // as every crop in a cell runs the same naming-convention chain, and each probe was
+        // previously a full linear scan of every faction in the load order.
+        private static readonly Dictionary<string, IFactionGetter?> FuzzyFactionMatchCache = new(StringComparer.OrdinalIgnoreCase);
+
         // Tries to find a faction whose EditorID ends with "Faction" and contains the given term.
         // This is the fuzzy fallback used when no exact "<BaseName><Kind>Faction" candidate exists,
         // to tolerate mods that use slightly different naming (prefixes/suffixes/minor variations).
@@ -285,10 +305,16 @@ namespace HarvestablesOwnership
             if (string.IsNullOrWhiteSpace(term))
                 return null;
 
-            return factionsByEdid.Values.FirstOrDefault(f =>
+            if (FuzzyFactionMatchCache.TryGetValue(term, out var cached))
+                return cached;
+
+            var match = factionsByEdid.Values.FirstOrDefault(f =>
                 f.EditorID != null
                 && f.EditorID.EndsWith("Faction", StringComparison.OrdinalIgnoreCase)
                 && f.EditorID.Contains(term, StringComparison.OrdinalIgnoreCase));
+
+            FuzzyFactionMatchCache[term] = match;
+            return match;
         }
 
         // Shared logic for the Town/Farm/Mill naming-convention lookups: strips a known suffix off the
@@ -532,6 +558,7 @@ namespace HarvestablesOwnership
         {
             var settings = LoadRunSettings(state);
             PopulateConventionOverrides(settings);
+            FuzzyFactionMatchCache.Clear();
 
             var factionsByEdid = new Dictionary<string, IFactionGetter>(StringComparer.OrdinalIgnoreCase);
             foreach (var fac in state.LoadOrder.PriorityOrder.Faction().WinningOverrides())
@@ -573,6 +600,15 @@ namespace HarvestablesOwnership
             // every single placed object is redundant work. This caches the result per unique Base
             // FormKey — identical logic/results to a fresh check every time, just not repeated.
             var baseRecordCropCache = new Dictionary<FormKey, string?>();
+
+            // Memoizes the category + owning-faction resolution by (containing cell, plugin name).
+            // Everything from CategorizeLocation through the naming-convention/override/plugin-
+            // override chain depends only on the cell/location and the placing plugin — never on
+            // which crop is being looked at — but a single farm cell commonly holds dozens of crop
+            // placements (wheat, cabbage, potato, garlic...). Without this cache, that whole chain
+            // (including linear scans over every faction in the load order via TryFuzzyFactionMatch)
+            // re-runs identically for every crop in the cell instead of once per cell.
+            var cellFactionResolutionCache = new Dictionary<(FormKey? CellKey, string Plugin), (LocationCategory Category, IFactionGetter? Faction)>();
 
             foreach (var context in state.LoadOrder.PriorityOrder.PlacedObject().WinningContextOverrides(state.LinkCache))
             {
@@ -648,6 +684,11 @@ namespace HarvestablesOwnership
                 // convention-override matching too, instead of resolving Location twice.
                 var location = containingCell?.Location.TryResolve(state.LinkCache);
 
+                // Hoisted out of the block below so it can also be handed to CategorizeLocation
+                // further down, instead of that method re-resolving the same location's keywords
+                // through the link cache a second time.
+                HashSet<string>? keywordEdids = null;
+
                 if (!cellExcluded && settings.ExcludeLocTypeRules.Count > 0)
                 {
                     // Only genuine location-TYPE classifier keywords (Bethesda's convention: always
@@ -656,7 +697,7 @@ namespace HarvestablesOwnership
                     // (WI...) like "WIDragonAttacked" — that happen to share vocabulary with our rules
                     // (e.g. "Dragon") without meaning the same thing. Filtering to the LocType prefix
                     // avoids matching those unrelated flags.
-                    var keywordEdids = location?.Keywords?
+                    keywordEdids = location?.Keywords?
                         .Select(k => k.TryResolve(state.LinkCache)?.EditorID)
                         .Where(e => e != null && e.StartsWith("LocType", StringComparison.OrdinalIgnoreCase))
                         .Select(e => e!)
@@ -713,14 +754,27 @@ namespace HarvestablesOwnership
                 // Matching. The raw location is passed through so naming-convention and
                 // convention-override lookups still run even when categorization came up
                 // Unknown (the category only affects the skip reason, not matching itself).
-                var (category, _) = CategorizeLocation(location, state.LinkCache, containingCell);
+                //
+                // None of this depends on which crop we're looking at — only on the containing
+                // cell and the placing plugin — so it's cached per (cell, plugin) rather than
+                // re-derived for every single crop placement in the same cell.
+                var resolutionKey = (containingCell?.FormKey, pluginName);
+                if (!cellFactionResolutionCache.TryGetValue(resolutionKey, out var resolution))
+                {
+                    var (resolvedCategory, _) = CategorizeLocation(location, state.LinkCache, containingCell, keywordEdids);
 
-                // Precedence: the patcher's regular naming-convention logic runs first, then
-                // Settings.ConventionOverrides acts as a fallback, and Settings.PluginFactionOverrides
-                // is the last resort.
-                var townFaction = TryGetNamingConventionFaction(location, factionsByEdid, containingCell)
-                    ?? TryGetConventionOverrideFaction(location, factionsByEdid, containingCell)
-                    ?? TryGetPluginFactionOverride(pluginName, settings, factionsByEdid);
+                    // Precedence: the patcher's regular naming-convention logic runs first, then
+                    // Settings.ConventionOverrides acts as a fallback, and Settings.PluginFactionOverrides
+                    // is the last resort.
+                    var resolvedFaction = TryGetNamingConventionFaction(location, factionsByEdid, containingCell)
+                        ?? TryGetConventionOverrideFaction(location, factionsByEdid, containingCell)
+                        ?? TryGetPluginFactionOverride(pluginName, settings, factionsByEdid);
+
+                    resolution = (resolvedCategory, resolvedFaction);
+                    cellFactionResolutionCache[resolutionKey] = resolution;
+                }
+
+                var (category, townFaction) = resolution;
 
                 if (townFaction == null)
                 {
@@ -840,6 +894,10 @@ namespace HarvestablesOwnership
             {
                 ConsoleWriteLine($"WARNING: Duplicate Convention Override EditorIDs were ignored (first entry wins): {string.Join(", ", duplicates)}");
             }
+
+            ConventionOverridesByKeyLengthDesc = ConventionOverrides
+                .OrderByDescending(kvp => kvp.Key.Length)
+                .ToList();
         }
 
         // ------------------------------------------------------------------

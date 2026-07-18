@@ -55,7 +55,7 @@ namespace HarvestablesOwnership
         [JsonProperty]
         public List<string> ExcludeNameTerms { get; set; } =
         [
-            "Moss", "FX", "SlaughterfishEgg", 
+            "Moss", "FX", "SlaughterfishEgg", "BYOH", 
         ];
 
         [DisplayName("Plugins to exclude")]
@@ -71,9 +71,7 @@ namespace HarvestablesOwnership
         [JsonProperty]
         public List<string> ExcludeCellRules { get; set; } =
         [
-            "BYOH", "Helgen", "Lair", "Dungeon", "AnimalDen", "Bandit", "Dragon", "Draugr", "Dwarven",
-            "Falmer", "Giant", "Hagraven", "Spriggan", "Vampire", "Warlock",
-            "Werewolf", "Forsworn", "Cave", "Ruin", "PlayerHouse",
+            "BYOH", "Helgen", 
         ];
 
         [DisplayName("Location Types to exclude")]
@@ -82,7 +80,7 @@ namespace HarvestablesOwnership
         public List<string> ExcludeLocTypeRules { get; set; } =
         [
             "Dungeon", "AnimalDen", "Bandit", "DragonLair", "Draugr", "Dwarven",
-            "Falmer", "Giant", "Hagraven", "Spriggan", "Vampire", "Warlock",
+            "Falmer", "GiantCamp", "Hagraven", "Spriggan", "Vampire", "Warlock",
             "Werewolf", "Forsworn", "Cave", "Ruin", "PlayerHouse", "Lair",
         ];
 
