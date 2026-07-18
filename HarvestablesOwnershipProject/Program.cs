@@ -1087,7 +1087,7 @@ namespace HarvestablesOwnership
                     "settings.json",
                     out LazySettings)
                 .AddPatch<ISkyrimMod, ISkyrimModGetter>(RunPatch)
-                .SetTypicalOpen(GameRelease.SkyrimSE, "CropOwnershipOverrides.esp")
+                .SetTypicalOpen(GameRelease.SkyrimSE, "HarvestablesOwnershipOverrides.esp")
                 .Run(args);
         }
     }
