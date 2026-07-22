@@ -6,7 +6,7 @@ namespace HarvestablesOwnership
 {
 
     [JsonObject]
-    public class ConventionOverrideEntry
+    public class OverrideEntry
     {
 
         [DisplayName("Match Pattern")]
@@ -22,7 +22,7 @@ namespace HarvestablesOwnership
 
 
     [JsonObject]
-    public class PluginFactionOverrideEntry
+    public class PluginRuleEntry
     {
 
         [DisplayName("Plugin Name (partial matching)")]
@@ -55,7 +55,7 @@ namespace HarvestablesOwnership
         [JsonProperty]
         public List<string> ExcludeNameTerms { get; set; } =
         [
-            "Moss", "FX", "SlaughterfishEgg", "BYOH", 
+            "Moss", "FX", "SlaughterfishEgg", "BYOH",
         ];
 
         [DisplayName("Plugins to exclude")]
@@ -63,7 +63,7 @@ namespace HarvestablesOwnership
         [JsonProperty]
         public List<string> ExcludePlugins { get; set; } =
         [
-            "SkyrimUnderground", "HearthFire", "Glenmoril",
+            "SkyrimUnderground", "HearthFire", "Glenmoril", "Vigilant", 
         ];
 
         [DisplayName("Cells to exclude")]
@@ -71,7 +71,7 @@ namespace HarvestablesOwnership
         [JsonProperty]
         public List<string> ExcludeCellRules { get; set; } =
         [
-            "BYOH", "Helgen", 
+            "BYOH", "Helgen", "Goldenglow", "BlackBriarLodge", 
         ];
 
         [DisplayName("Location Types to exclude")]
@@ -84,10 +84,10 @@ namespace HarvestablesOwnership
             "Werewolf", "Forsworn", "Cave", "Ruin", "PlayerHouse", "Lair",
         ];
 
-        [DisplayName("Plugin overrides (Plugin name contains -> Faction EditorID)")]
-        [Description("harvestables placed by a matching plugin are assigned to the given faction, taking precedence over location-based matching.")]
+        [DisplayName("Manual rule (plugins) — Priority 6 (last resort)")]
+        [Description("harvestables placed by a matching plugin are assigned to the given faction. This is the last-resort tier: it's only used once Overrides, Cell owner, the ownership vote, Naming Convention, and Manual rule (cell) have all failed to find an owner.")]
         [JsonProperty]
-        public List<PluginFactionOverrideEntry> PluginFactionOverrides { get; set; } =
+        public List<PluginRuleEntry> ManualPluginRules { get; set; } =
         [
             new() { PluginName = "Whiterun", FactionEditorID = "TownWhiterunFaction" },
             new() { PluginName = "Solitude", FactionEditorID = "TownSolitudeFaction" },
@@ -113,10 +113,10 @@ namespace HarvestablesOwnership
             new() { PluginName = "DarkwaterCrossing", FactionEditorID = "TownDarkwaterCrossingFaction" },
         ];
 
-        [DisplayName("Convention overrides (Cell/Location EditorID -> Faction EditorID)")]
-        [Description("Be careful not to use too broad terms! EditorID can be either a CELL or a LOCATION EditorID.")]
+        [DisplayName("Overrides — Priority 1 (exact match) / Manual rule (cell) — Priority 5 (fuzzy fallback)")]
+        [Description("Be careful not to use too broad terms! EditorID can be either a CELL or a LOCATION EditorID. These entries are checked twice: first as an exact match ('Overrides', the highest priority tier of all), and — only if nothing higher up the chain resolved an owner — again as a broad substring/fuzzy match ('Manual rule (cell)', Priority 5, just above the plugin-name fallback).")]
         [JsonProperty]
-        public List<ConventionOverrideEntry> ConventionOverrides { get; set; } =
+        public List<OverrideEntry> Overrides { get; set; } =
         [
             // Vanilla Towns
             new() { EditorID = "Whiterun", FactionEditorID = "TownWhiterunFaction" },
