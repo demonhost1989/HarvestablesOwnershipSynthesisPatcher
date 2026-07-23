@@ -697,9 +697,12 @@ namespace HarvestablesOwnership
                     // (WI...) like "WIDragonAttacked" — that happen to share vocabulary with our rules
                     // (e.g. "Dragon") without meaning the same thing. Filtering to the LocType prefix
                     // avoids matching those unrelated flags.
+                    var locPrefixes = new[] { "LocType", "LocSet" };
+
                     var keywordEdids = location?.Keywords?
                         .Select(k => k.TryResolve(state.LinkCache)?.EditorID)
-                        .Where(e => e != null && e.StartsWith("LocType", StringComparison.OrdinalIgnoreCase))
+                        .Where(e => e != null &&
+                                    locPrefixes.Any(p => e.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
                         .Select(e => e!)
                         .ToHashSet(StringComparer.OrdinalIgnoreCase);
 

@@ -63,7 +63,7 @@ namespace HarvestablesOwnership
         [JsonProperty]
         public List<string> ExcludePlugins { get; set; } =
         [
-            "SkyrimUnderground", "HearthFire", "Glenmoril", "Vigilant", 
+            "SkyrimUnderground", "HearthFire", "Glenmoril", "Vigilant", "Sewers", 
         ];
 
         [DisplayName("Cells to exclude")]
