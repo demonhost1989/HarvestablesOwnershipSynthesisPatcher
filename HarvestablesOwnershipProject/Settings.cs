@@ -55,7 +55,7 @@ namespace HarvestablesOwnership
         [JsonProperty]
         public List<string> ExcludeNameTerms { get; set; } =
         [
-            "Moss", "FX", "SlaughterfishEgg", "BYOH",
+            "Moss", "FX", "SlaughterfishEgg", "BYOH", "Nonharvestable",
         ];
 
         [DisplayName("Ore veins to patch")]
