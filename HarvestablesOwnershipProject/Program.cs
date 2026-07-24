@@ -517,6 +517,7 @@ namespace HarvestablesOwnership
             var excludedCellsByRule = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
             var excludedLocTypesByRule = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
             var excludedNamesByRule = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            var excludedOwnersByRule = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
             var cropTypeCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             var patchedCropTypeCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
@@ -746,6 +747,25 @@ namespace HarvestablesOwnership
                     continue;
                 }
 
+                // Owners exclusion rule: skip the item instead of assigning it if the resolved
+                // Faction (however it was reached) matches one of settings.ExcludeOwnerFactionTerms.
+                var ownerFactionEdid = townFaction.EditorID;
+                var matchedOwnerTerm = ownerFactionEdid != null
+                    ? settings.ExcludeOwnerFactionTerms.FirstOrDefault(term => ownerFactionEdid.Contains(term, StringComparison.OrdinalIgnoreCase))
+                    : null;
+                if (matchedOwnerTerm != null)
+                {
+                    if (!excludedOwnersByRule.TryGetValue(matchedOwnerTerm, out var ownerList))
+                        excludedOwnersByRule[matchedOwnerTerm] = ownerList = [];
+
+                    ownerList.Add(cropEdid);
+                    excludedCount++;
+                    excludedSet.Add(cropEdid);
+
+                    AddSkip(skippedCropsByCell, cropEdid, pluginName, cellEdid, $"Owner faction excluded ({townFaction.EditorID})");
+                    continue;
+                }
+
                 var patchObject = context.GetOrAddAsOverride(state.PatchMod);
                 patchObject.Owner.SetTo(townFaction);
                 patchObject.FactionRank = 0;
@@ -769,6 +789,7 @@ namespace HarvestablesOwnership
                 excludedCellsByRule,
                 excludedLocTypesByRule,
                 excludedNamesByRule,
+                excludedOwnersByRule,
                 patchedCropTypeCounts,
                 patchedCount,
                 alreadyOwnedCount,
@@ -862,6 +883,7 @@ namespace HarvestablesOwnership
             Dictionary<string, List<string>> excludedCellsByRule,
             Dictionary<string, List<string>> excludedLocTypesByRule,
             Dictionary<string, List<string>> excludedNamesByRule,
+            Dictionary<string, List<string>> excludedOwnersByRule,
             Dictionary<string, int> patchedCropTypeCounts,
             int patchedCount,
             int alreadyOwnedCount,
@@ -1026,6 +1048,17 @@ namespace HarvestablesOwnership
 
                 if (count > 0)
                     combined.Add((term, count, "name"));
+            }
+
+            foreach (var term in settings.ExcludeOwnerFactionTerms)
+            {
+                int count = excludedOwnersByRule
+                    .Where(kvp => kvp.Key.Contains(term, StringComparison.OrdinalIgnoreCase))
+                    .SelectMany(kvp => kvp.Value)
+                    .Count();
+
+                if (count > 0)
+                    combined.Add((term, count, "owner"));
             }
 
             foreach (var entry in combined.OrderByDescending(e => e.Count))

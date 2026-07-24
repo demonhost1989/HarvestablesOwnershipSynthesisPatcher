@@ -55,7 +55,7 @@ namespace HarvestablesOwnership
         [JsonProperty]
         public List<string> ExcludeNameTerms { get; set; } =
         [
-            "Moss", "FX", "SlaughterfishEgg", "BYOH", "nonharvestable", 
+            "Moss", "FX", "SlaughterfishEgg", "BYOH",
         ];
 
         [DisplayName("Ore veins to patch")]
@@ -92,7 +92,7 @@ namespace HarvestablesOwnership
         [JsonProperty]
         public List<string> ExcludeCellRules { get; set; } =
         [
-            "BYOH", "Helgen", "Goldenglow", "BlackBriarLodge",
+            "BYOH", "Helgen", "Goldenglow", "BlackBriarLodge", "POI", "Unused", "018AuriHouse", "3DNPC", 
         ];
 
         [DisplayName("Location Types to exclude")]
@@ -103,6 +103,14 @@ namespace HarvestablesOwnership
             "Dungeon", "AnimalDen", "Bandit", "DragonLair", "Draugr", "Dwarven",
             "Falmer", "GiantCamp", "Hagraven", "Spriggan", "Vampire", "Warlock",
             "Werewolf", "Forsworn", "Cave", "Ruin", "PlayerHouse", "Lair",
+        ];
+
+        [DisplayName("Owners to exclude")]
+        [Description("Substring match against the resolved Faction's EditorID. Runs after every tier in the priority chain has already picked a candidate owner: if that candidate matches one of these terms, the item is left unowned (same as if no tier had resolved anything) instead of being assigned to that faction. Use this to block specific factions (e.g. a generic crime faction picked up via Cell owner or the ownership vote) from ever ending up as an owner, regardless of which tier produced them.")]
+        [JsonProperty]
+        public List<string> ExcludeOwnerFactionTerms { get; set; } =
+        [
+            "KhajiitCaravanFaction", "Soc_RM", "Player", 
         ];
 
         [DisplayName("Manual rule (plugins) — Priority 5")]
