@@ -55,7 +55,28 @@ namespace HarvestablesOwnership
         [JsonProperty]
         public List<string> ExcludeNameTerms { get; set; } =
         [
-            "Moss", "FX", "SlaughterfishEgg", "BYOH",
+            "Moss", "FX", "SlaughterfishEgg", "BYOH", "nonharvestable", 
+        ];
+
+        [DisplayName("Ore veins to patch")]
+        [Description("Substring match against the placed object's (ACTI) EditorID. Only placed objects whose base record is an Activator AND matches one of these terms are considered as ore veins.")]
+        [JsonProperty]
+        public List<string> IncludeOreVeinTerms { get; set; } =
+        [
+            "MineOre",
+        ];
+
+        [DisplayName("Ore vein names to exclude")]
+        [Description("Substring match against the ore vein's EditorID. Used to filter out decorative/non-harvestable variants that happen to match an include term above.")]
+        [JsonProperty]
+        public List<string> ExcludeOreNameTerms { get; set; } = [];
+
+        [DisplayName("Mine location keywords")]
+        [Description("A placed ore vein is only ever considered for ownership if its containing Location carries at least one of these keyword EditorIDs (checked as an exact match, e.g. Bethesda's 'LocTypeMine'). This is the 'friendly mine' gate: it runs before every other rule below, and an ore vein whose location doesn't carry one of these keywords is skipped outright, regardless of Overrides/Naming Convention/etc. Ore veins outside of any mine location (e.g. surface veins, or decorative ACTI records some mods place elsewhere) are never patched.")]
+        [JsonProperty]
+        public List<string> MineLocTypeKeywords { get; set; } =
+        [
+            "LocTypeMine",
         ];
 
         [DisplayName("Plugins to exclude")]
@@ -63,7 +84,7 @@ namespace HarvestablesOwnership
         [JsonProperty]
         public List<string> ExcludePlugins { get; set; } =
         [
-            "SkyrimUnderground", "HearthFire", "Glenmoril", "Vigilant", "Sewers", 
+            "SkyrimUnderground", "HearthFire", "Glenmoril", "Vigilant", "Sewers",
         ];
 
         [DisplayName("Cells to exclude")]
@@ -71,7 +92,7 @@ namespace HarvestablesOwnership
         [JsonProperty]
         public List<string> ExcludeCellRules { get; set; } =
         [
-            "BYOH", "Helgen", "Goldenglow", "BlackBriarLodge", 
+            "BYOH", "Helgen", "Goldenglow", "BlackBriarLodge",
         ];
 
         [DisplayName("Location Types to exclude")]
@@ -84,8 +105,8 @@ namespace HarvestablesOwnership
             "Werewolf", "Forsworn", "Cave", "Ruin", "PlayerHouse", "Lair",
         ];
 
-        [DisplayName("Manual rule (plugins) — Priority 6 (last resort)")]
-        [Description("harvestables placed by a matching plugin are assigned to the given faction. This is the last-resort tier: it's only used once Overrides, Cell owner, the ownership vote, Naming Convention, and Manual rule (cell) have all failed to find an owner.")]
+        [DisplayName("Manual rule (plugins) — Priority 5")]
+        [Description("harvestables placed by a matching plugin are assigned to the given faction. This runs once Overrides, Cell owner, Naming Convention, and Manual rule (cell) have all failed to find an owner. Only the Ownership vote (Priority 6, last resort) runs after it.")]
         [JsonProperty]
         public List<PluginRuleEntry> ManualPluginRules { get; set; } =
         [
@@ -113,8 +134,8 @@ namespace HarvestablesOwnership
             new() { PluginName = "DarkwaterCrossing", FactionEditorID = "TownDarkwaterCrossingFaction" },
         ];
 
-        [DisplayName("Overrides — Priority 1 (exact match) / Manual rule (cell) — Priority 5 (fuzzy fallback)")]
-        [Description("Be careful not to use too broad terms! EditorID can be either a CELL or a LOCATION EditorID. These entries are checked twice: first as an exact match ('Overrides', the highest priority tier of all), and — only if nothing higher up the chain resolved an owner — again as a broad substring/fuzzy match ('Manual rule (cell)', Priority 5, just above the plugin-name fallback).")]
+        [DisplayName("Overrides — Priority 1 (exact match) / Manual rule (cell) — Priority 4 (fuzzy fallback)")]
+        [Description("Be careful not to use too broad terms! EditorID can be either a CELL or a LOCATION EditorID. These entries are checked twice: first as an exact match ('Overrides', the highest priority tier of all), and — only if nothing higher up the chain resolved an owner — again as a broad substring/fuzzy match ('Manual rule (cell)', Priority 4, just above the plugin-name fallback).")]
         [JsonProperty]
         public List<OverrideEntry> Overrides { get; set; } =
         [

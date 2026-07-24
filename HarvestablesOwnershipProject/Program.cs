@@ -16,8 +16,7 @@ namespace HarvestablesOwnership
         // Settings load/save
         // ------------------------------------------------------------------
 
-        // Without Replace, Json.NET appends deserialized list entries onto the defaults from the
-        // property initializers, duplicating every rule/override once a settings file exists.
+        // Replace prevents Json.NET from appending onto the default list entries when deserializing.
         private static readonly JsonSerializerSettings SettingsJsonOptions = new()
         {
             ObjectCreationHandling = ObjectCreationHandling.Replace,
@@ -112,28 +111,13 @@ namespace HarvestablesOwnership
         // Faction resolution
         // ------------------------------------------------------------------
 
-        // Cell/Location EditorID -> Faction EditorID overrides, populated from Settings.Overrides
-        // at the start of each run (see RunPatch). Naming conventions across mods aren't
-        // standardized, so this can't be fully caught by logic alone. The same entries here
-        // serve two different priority tiers: exact-match lookups run first as "Overrides"
-        // (Priority 1), and a broad substring/fuzzy fallback over the same entries runs much
-        // later as "Manual rule (cell)" (Priority 5) — see TryGetExactOverrideFaction and
-        // TryGetPartialOverrideFaction.
+        // Cell/Location EditorID -> Faction EditorID overrides from Settings.Overrides, shared by the "Overrides" (exact) and "Manual rule (cell)" (fuzzy) tiers.
         private static Dictionary<string, string> OverridesByEdid = new(StringComparer.OrdinalIgnoreCase);
 
-        // Same entries as OverridesByEdid, pre-sorted longest-key-first once per run (in
-        // PopulateOverrides) instead of being re-sorted via LINQ on every single
-        // TryFindPartialOverride call. Since crop placements are processed by the
-        // thousands and each can probe several candidate strings, re-sorting per call was one
-        // of the hotter allocations in the patch loop.
+        // Same entries as OverridesByEdid, pre-sorted longest-key-first so TryFindPartialOverride never has to re-sort.
         private static List<KeyValuePair<string, string>> OverridesByKeyLengthDesc = [];
 
-        // Finds an override for a given EditorID using partial (substring, either
-        // direction) matching. The longest matching key wins, so a specific key like
-        // "KynesgroveFarmsLocationTGCoKG" beats a broad one like "Kynesgrove". Because the list
-        // is already sorted longest-key-first, the first match found is the longest match —
-        // same result as the old Where().OrderByDescending().FirstOrDefault(), just without
-        // re-sorting every time.
+        // Finds an override via substring match (either direction); longest matching key wins.
         private static bool TryFindPartialOverride(string editorId, out string factionEdid)
         {
             factionEdid = string.Empty;
@@ -166,7 +150,6 @@ namespace HarvestablesOwnership
         }
 
         // Generates root candidates from an EditorID by stripping trailing digits (e.g. "Name01" -> "Name").
-        // Always yields the raw value first; each candidate is returned at most once.
         private static IEnumerable<string> GetRootsFromEditorId(string? editorId)
         {
             if (string.IsNullOrWhiteSpace(editorId))
@@ -183,20 +166,14 @@ namespace HarvestablesOwnership
                 yield return digitsStripped;
         }
 
-        // Common suffixes stripped from a location's base name to build extra faction-name candidates
-        // (e.g. "LemkilsFarmLocation" -> base "LemkilsFarm" -> also try "Lemkils").
+        // Common suffixes stripped from a location's base name to build extra faction-name candidates.
         private static readonly string[] LocationNameSuffixes =
             ["Farm", "House", "Meadery", "Mill", "Village", "Stead", "Hold", "Location", "Exterior", "Interior", "Faction"];
 
-        // Memo cache for TryFuzzyFactionMatch, cleared once per run (see RunPatch). The same
-        // handful of base-name terms (e.g. "Riverwood", "Whiterun") get probed over and over
-        // as every crop in a cell runs the same naming-convention chain, and each probe was
-        // previously a full linear scan of every faction in the load order.
+        // Memo cache for TryFuzzyFactionMatch, cleared once per run.
         private static readonly Dictionary<string, IFactionGetter?> FuzzyFactionMatchCache = new(StringComparer.OrdinalIgnoreCase);
 
-        // Tries to find a faction whose EditorID ends with "Faction" and contains the given term.
-        // This is the fuzzy fallback used when no exact "<BaseName><Kind>Faction" candidate exists,
-        // to tolerate mods that use slightly different naming (prefixes/suffixes/minor variations).
+        // Fuzzy fallback: finds a faction whose EditorID ends with "Faction" and contains the given term.
         private static IFactionGetter? TryFuzzyFactionMatch(string term, Dictionary<string, IFactionGetter> factionsByEdid)
         {
             if (string.IsNullOrWhiteSpace(term))
@@ -214,9 +191,7 @@ namespace HarvestablesOwnership
             return match;
         }
 
-        // Shared logic for the Town/Farm/Mill naming-convention lookups: strips a known suffix off the
-        // EditorID, builds the expected "<BaseName><Kind>Faction" candidate, and falls back to a fuzzy
-        // match (and optionally a set of extra root candidates) if no exact match is found.
+        // Shared Town/Farm/Mill naming-convention lookup: strip suffix, build candidate name, fall back to fuzzy match.
         private static IFactionGetter? TryFindFactionByConvention(
             string editorId,
             string stripSuffix,
@@ -249,8 +224,7 @@ namespace HarvestablesOwnership
             return null;
         }
 
-        // Builds "TownXFaction"-style root candidates by stripping common location-name suffixes,
-        // plus a digit-stripped variant (e.g. "Riverwood01" -> "Riverwood").
+        // Builds "TownXFaction"-style root candidates by stripping common location-name suffixes and trailing digits.
         private static IEnumerable<string> GetTownRootCandidates(string baseName)
         {
             var current = baseName;
@@ -285,10 +259,7 @@ namespace HarvestablesOwnership
             return name; // nothing left to strip
         }
 
-        // Resolves a faction purely via naming conventions (Town/Farm/Mill/Sawmill patterns against
-        // the location EditorID, then a Town-pattern fallback against the cell EditorID). Contains
-        // no override lookups at all — those are handled separately by TryGetExactOverrideFaction
-        // and TryGetPartialOverrideFaction, so callers can control precedence between the three.
+        // Priority 3: "Naming Convention" — Town/Farm/Mill/Sawmill patterns against location/cell EditorID.
         private static IFactionGetter? TryGetNamingConventionFaction(
             ILocationGetter? location,
             Dictionary<string, IFactionGetter> factionsByEdid,
@@ -340,10 +311,7 @@ namespace HarvestablesOwnership
                     return sawMillFaction;
             }
 
-            // Naming conventions against the cell EditorID, for cells whose location is missing
-            // or prefixed in a way the location pass can't strip (e.g. cell "SnowShodFarmExterior"
-            // -> root "SnowShodFarm" -> TownSnowShodFarmFaction, even though the location EDID
-            // carries a "Riften" prefix).
+            // Naming conventions against the cell EditorID, for cells lacking or mismatching a location EditorID.
             if (cell?.EditorID != null)
             {
                 var cellFaction = TryFindFactionByConvention(
@@ -359,11 +327,7 @@ namespace HarvestablesOwnership
             return null;
         }
 
-        // Priority 1: "Overrides" — exact EditorID match (cell or location) against
-        // Settings.Overrides. This is the highest-priority tier: a deliberate, curated entry
-        // here beats everything else, including Cell owner and the ownership vote. Contains no
-        // fuzzy/substring matching — see TryGetPartialOverrideFaction for that (Priority 5,
-        // "Manual rule (cell)").
+        // Priority 1: "Overrides" — exact EditorID match (cell or location) against Settings.Overrides.
         private static IFactionGetter? TryGetExactOverrideFaction(
             ILocationGetter? location,
             Dictionary<string, IFactionGetter> factionsByEdid,
@@ -384,12 +348,7 @@ namespace HarvestablesOwnership
             return null;
         }
 
-        // Priority 5: "Manual rule (cell)" — a broad substring/fuzzy match over the very same
-        // Settings.Overrides entries used by TryGetExactOverrideFaction, but only consulted much
-        // later in the chain, after Cell owner, the ownership vote, and Naming Convention have
-        // all failed to produce a faction. This is deliberately the loosest/least-confident tier
-        // short of the plugin-name fallback, since a broad pattern here is more likely to produce
-        // a false-positive match than an exact one.
+        // Priority 4: "Manual rule (cell)" — broad substring/fuzzy match over the same Settings.Overrides entries.
         private static IFactionGetter? TryGetPartialOverrideFaction(
             ILocationGetter? location,
             Dictionary<string, IFactionGetter> factionsByEdid,
@@ -416,10 +375,7 @@ namespace HarvestablesOwnership
             return null;
         }
 
-        // Priority 2: "Cell owner" — the containing CELL record's own Owner field (the same
-        // XOWN-style ownership data used for trespass/crime detection), if the CELL itself has
-        // one set and it resolves to a Faction (NPC-owned cells are ignored here; we only assign
-        // faction ownership).
+        // Priority 2: "Cell owner" — the containing CELL record's own Owner (XOWN) field, if set to a Faction.
         private static IFactionGetter? TryGetCellOwnerFaction(
             ICellGetter? cell,
             ILinkCache<ISkyrimMod, ISkyrimModGetter> linkCache)
@@ -430,10 +386,7 @@ namespace HarvestablesOwnership
             return cell.Owner.TryResolve(linkCache) as IFactionGetter;
         }
 
-        // Priority 3: "Ownership vote" — looks up the pre-computed majority faction owner among
-        // all already-owned placed objects in this cell (see BuildCellOwnershipVotes). Returns
-        // null (falling through to Naming Convention) if the cell wasn't in the precomputed table
-        // at all — meaning either no already-owned objects were found there, or the vote was tied.
+        // Priority 6: "Ownership vote" — pre-computed majority faction owner among the cell's already-owned objects; last resort.
         private static IFactionGetter? TryGetCellVoteFaction(
             ICellGetter? cell,
             Dictionary<FormKey, (IFactionGetter Faction, int WinningCount, int TotalVotes)> cellOwnershipVotes)
@@ -444,10 +397,7 @@ namespace HarvestablesOwnership
             return cellOwnershipVotes.TryGetValue(cell.FormKey, out var vote) ? vote.Faction : null;
         }
 
-        // Finds a faction for crops placed by a specific plugin (Settings.ManualPluginRules,
-        // partial plugin-name matching). First matching entry that resolves to a real faction
-        // wins. This is Priority 6, the last resort in the chain — it only runs once every other
-        // tier has failed to produce an owner.
+        // Priority 5: "Manual rule (plugin)" — Settings.ManualPluginRules, partial plugin-name matching.
         private static IFactionGetter? TryGetManualPluginRuleFaction(
             string pluginName,
             Settings settings,
@@ -469,9 +419,7 @@ namespace HarvestablesOwnership
             return null;
         }
 
-        // Walks up the placed-object's context chain to find its containing cell, re-resolving through
-        // the link cache to guarantee the fully-merged winning override (rather than a minimal stub
-        // from whichever plugin owns the placed reference, which can be missing the EDID subrecord).
+        // Walks up the placed-object's context chain to find its containing cell, re-resolved through the link cache.
         private static ICellGetter? FindContainingCell(
             IModContext<ISkyrimMod, ISkyrimModGetter, IPlacedObject, IPlacedObjectGetter> context,
             ILinkCache<ISkyrimMod, ISkyrimModGetter> linkCache)
@@ -493,17 +441,7 @@ namespace HarvestablesOwnership
             return null;
         }
 
-        // Priority 3 precompute: "Ownership vote". Scans every already-owned placed object in the
-        // load order (any type, not just harvestables) and tallies, per cell, which faction owns
-        // the most of them. Run once per patch as a full separate pass (rather than inline in the
-        // main loop) since the main loop only ever looks at harvestable placements — this needs
-        // to see every placed object's ownership, including non-crop furniture/containers/etc.,
-        // to know who "controls" a cell. NPC-owned placements are ignored (only Faction owners
-        // count towards the vote, since that's all we ever assign). A cell with no already-owned
-        // objects, or with a tie for the top spot, is left out of the returned table entirely —
-        // callers should treat a missing entry as "no vote result", falling through to the next
-        // priority tier (Naming Convention). WinningCount/TotalVotes are carried along purely for
-        // reporting, so the printout can show how many objects actually decided each vote.
+        // Priority 6 precompute: tallies, per cell, which faction owns the most already-owned placed objects.
         private static Dictionary<FormKey, (IFactionGetter Faction, int WinningCount, int TotalVotes)> BuildCellOwnershipVotes(
             IPatcherState<ISkyrimMod, ISkyrimModGetter> state)
         {
@@ -536,8 +474,7 @@ namespace HarvestablesOwnership
             {
                 var ordered = factionCounts.OrderByDescending(kv => kv.Value).ToList();
 
-                // A tie for first place means no clear majority owner - leave this cell out of
-                // the table so callers fall through to the next priority tier.
+                // A tie for first place means no clear majority owner — leave this cell out of the table.
                 bool tied = ordered.Count > 1 && ordered[0].Value == ordered[1].Value;
                 if (tied)
                     continue;
@@ -569,9 +506,7 @@ namespace HarvestablesOwnership
                     factionsByEdid.TryAdd(fac.EditorID, fac);
             }
 
-            // Priority 3's precomputed table: cell FormKey -> majority faction owner among that
-            // cell's already-owned placed objects (or absent if no data / a tie — see
-            // BuildCellOwnershipVotes).
+            // Priority 6's precomputed table: cell FormKey -> majority faction owner (absent if no data / a tie).
             var cellOwnershipVotes = BuildCellOwnershipVotes(state);
 
             var seen = new HashSet<FormKey>();
@@ -599,20 +534,10 @@ namespace HarvestablesOwnership
             ConsoleWriteLine("PATCHING...".PadLeft(35));
             PrintShortDivider();
 
-            // Memoizes the "is this Base record a matching crop?" check by FormKey. A huge number of
-            // placed objects share the exact same Base record (e.g. every wheat stalk in the game
-            // points at the same TreeFloraWheat01 record), so resolving and re-checking it fresh for
-            // every single placed object is redundant work. This caches the result per unique Base
-            // FormKey — identical logic/results to a fresh check every time, just not repeated.
-            var baseRecordCropCache = new Dictionary<FormKey, string?>();
+            // Memoizes the "is this Base record a matching crop or ore vein?" check by FormKey.
+            var baseRecordCropCache = new Dictionary<FormKey, (string Edid, bool IsOreVein)?>();
 
-            // Memoizes the owning-faction resolution by (containing cell, plugin name).
-            // The naming-convention/override/plugin-override chain depends only on the
-            // cell/location and the placing plugin — never on which crop is being looked at —
-            // but a single farm cell commonly holds dozens of crop placements (wheat, cabbage,
-            // potato, garlic...). Without this cache, that whole chain
-            // (including linear scans over every faction in the load order via TryFuzzyFactionMatch)
-            // re-runs identically for every crop in the cell instead of once per cell.
+            // Memoizes the owning-faction resolution by (containing cell, plugin name), since it never depends on the specific crop.
             var cellFactionResolutionCache = new Dictionary<(FormKey? CellKey, string Plugin), (IFactionGetter? Faction, string? Source, string? VoteDetail)>();
 
             foreach (var context in state.LoadOrder.PriorityOrder.PlacedObject().WinningContextOverrides(state.LinkCache))
@@ -623,28 +548,33 @@ namespace HarvestablesOwnership
                 if (baseFormKeyNullable is not { } baseFormKey)
                     continue;
 
-                if (!baseRecordCropCache.TryGetValue(baseFormKey, out var cachedCropEdid))
+                if (!baseRecordCropCache.TryGetValue(baseFormKey, out var cachedInfo))
                 {
-                    // Not seen this Base record before — resolve it directly against the same link
-                    // cache the placement itself uses, and only accept it if it's actually Flora or
-                    // Tree (resolved directly rather than via a separately-built enumeration, so
-                    // nothing falls through an enumeration mismatch).
-                    cachedCropEdid = null;
+                    // Resolve the Base record once: accept only if it's a matching Flora/Tree crop or Activator ore vein.
+                    cachedInfo = null;
                     if (state.LinkCache.TryResolve<IMajorRecordGetter>(baseFormKey, out var baseRecord)
-                        && baseRecord is (IFloraGetter or ITreeGetter)
-                        && baseRecord.EditorID is string resolvedEdid
-                        && settings.IncludeHarvestableTerms.Any(term => resolvedEdid.Contains(term, StringComparison.OrdinalIgnoreCase)))
+                        && baseRecord.EditorID is string resolvedEdid)
                     {
-                        cachedCropEdid = resolvedEdid;
+                        if (baseRecord is (IFloraGetter or ITreeGetter)
+                            && settings.IncludeHarvestableTerms.Any(term => resolvedEdid.Contains(term, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            cachedInfo = (resolvedEdid, IsOreVein: false);
+                        }
+                        else if (baseRecord is IActivatorGetter
+                            && settings.IncludeOreVeinTerms.Any(term => resolvedEdid.Contains(term, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            cachedInfo = (resolvedEdid, IsOreVein: true);
+                        }
                     }
 
-                    baseRecordCropCache[baseFormKey] = cachedCropEdid;
+                    baseRecordCropCache[baseFormKey] = cachedInfo;
                 }
 
-                if (cachedCropEdid == null)
+                if (cachedInfo is not { } matchedBase)
                     continue;
 
-                var cropEdid = cachedCropEdid;
+                var cropEdid = matchedBase.Edid;
+                var isOreVein = matchedBase.IsOreVein;
 
                 if (!seen.Add(placedObject.FormKey))
                     continue;
@@ -668,7 +598,7 @@ namespace HarvestablesOwnership
                     continue;
                 }
 
-                // Wildcard-aware... no, partial-match cell exclusion.
+                // Partial-match cell exclusion.
                 bool cellExcluded = false;
                 foreach (var rule in settings.ExcludeCellRules)
                 {
@@ -683,20 +613,29 @@ namespace HarvestablesOwnership
                     }
                 }
 
-                // Location-type exclusion (matched against location keywords like "Dungeon")
-                //
-                // Resolved once here and reused below for the eventual naming-convention/
-                // convention-override matching too, instead of resolving Location twice.
+                // Location resolved once here for reuse below (loc-type exclusion, naming convention, mine gate).
                 var location = containingCell?.Location.TryResolve(state.LinkCache);
+
+                // Ore-vein-only "friendly mine" gate: skip unless the vein's Location carries a MineLocTypeKeywords keyword.
+                if (isOreVein && !cellExcluded)
+                {
+                    bool inMineLocation = location?.Keywords != null && location.Keywords
+                        .Select(k => k.TryResolve(state.LinkCache)?.EditorID)
+                        .Any(edid => edid != null && settings.MineLocTypeKeywords.Any(mineKeyword =>
+                            string.Equals(mineKeyword, edid, StringComparison.OrdinalIgnoreCase)));
+
+                    if (!inMineLocation)
+                    {
+                        excludedCount++;
+                        excludedSet.Add(cropEdid);
+                        AddSkip(skippedCropsByCell, cropEdid, pluginName, cellEdid, "Not in a mine location");
+                        continue;
+                    }
+                }
 
                 if (!cellExcluded && settings.ExcludeLocTypeRules.Count > 0)
                 {
-                    // Only genuine location-TYPE classifier keywords (Bethesda's convention: always
-                    // prefixed "LocType...", e.g. LocTypeFarm, LocTypeDungeon). Locations also carry a
-                    // lot of unrelated keyword data — Civil War flags (CW...), world-interaction flags
-                    // (WI...) like "WIDragonAttacked" — that happen to share vocabulary with our rules
-                    // (e.g. "Dragon") without meaning the same thing. Filtering to the LocType prefix
-                    // avoids matching those unrelated flags.
+                    // Only match genuine LocType/LocSet keywords, to avoid unrelated keyword vocabulary (e.g. "WIDragonAttacked").
                     var locPrefixes = new[] { "LocType", "LocSet" };
 
                     var keywordEdids = location?.Keywords?
@@ -741,7 +680,8 @@ namespace HarvestablesOwnership
                     continue;
                 }
 
-                var matchedNameTerm = settings.ExcludeNameTerms
+                var nameExcludeTerms = isOreVein ? settings.ExcludeOreNameTerms : settings.ExcludeNameTerms;
+                var matchedNameTerm = nameExcludeTerms
                     .FirstOrDefault(term => cropEdid.Contains(term, StringComparison.OrdinalIgnoreCase));
                 if (matchedNameTerm != null)
                 {
@@ -754,25 +694,19 @@ namespace HarvestablesOwnership
                     continue;
                 }
 
-                // The raw location and cell are passed through the full chain below regardless
-                // of anything else about the placement — resolution depends only on the
-                // containing cell/location and the placing plugin, never on which crop we're
-                // looking at — so it's cached per (cell, plugin) rather than re-derived for
-                // every single crop placement in the same cell.
+                // Resolution depends only on cell/location + plugin, never on the item — cached per (cell, plugin).
                 var resolutionKey = (containingCell?.FormKey, pluginName);
                 if (!cellFactionResolutionCache.TryGetValue(resolutionKey, out var resolved))
                 {
-                    // Precedence (highest to lowest). Each tier is tried in order and the first
-                    // one to resolve a faction wins; its label is recorded alongside the faction
-                    // so the report can show what actually decided ownership for each crop.
+                    // Precedence (highest to lowest); first tier to resolve a faction wins.
                     (Func<IFactionGetter?> Resolve, string Source)[] tiers =
                     [
                         (() => TryGetExactOverrideFaction(location, factionsByEdid, containingCell), "Overrides"),
                         (() => TryGetCellOwnerFaction(containingCell, state.LinkCache), "Cell owner"),
-                        (() => TryGetCellVoteFaction(containingCell, cellOwnershipVotes), "Ownership vote"),
                         (() => TryGetNamingConventionFaction(location, factionsByEdid, containingCell), "Naming Convention"),
                         (() => TryGetPartialOverrideFaction(location, factionsByEdid, containingCell), "Manual rule (Cell ID)"),
                         (() => TryGetManualPluginRuleFaction(pluginName, settings, factionsByEdid), "Manual rule (plugin)"),
+                        (() => TryGetCellVoteFaction(containingCell, cellOwnershipVotes), "Ownership vote"),
                     ];
 
                     IFactionGetter? resolvedFaction = null;
@@ -788,9 +722,7 @@ namespace HarvestablesOwnership
                         }
                     }
 
-                    // Captured separately from resolvedSource so the tier name stays clean for
-                    // grouping in the Ownership Source Summary — only the per-crop cell listing
-                    // shows the specific counts that decided this particular vote.
+                    // Captured separately so the Ownership Source Summary groups cleanly by tier name.
                     string? resolvedVoteDetail = null;
                     if (resolvedSource == "Ownership vote"
                         && containingCell != null
@@ -949,13 +881,7 @@ namespace HarvestablesOwnership
                 var cellLabel = kvp.Key;
                 var crops = kvp.Value;
 
-                // Ownership resolution is cached per (cell, plugin), so within one genuine cell
-                // every patched crop normally shares the same "decided by" source. "Unknown cell"
-                // is the one label where that assumption breaks — it lumps together many
-                // different physical cells that just lack an EditorID, so their sources can
-                // genuinely differ. Also fall back to per-crop display if a real cell somehow
-                // still ends up with more than one distinct source, rather than silently hiding
-                // a real discrepancy behind a single cell-level line.
+                // "Unknown cell" and any cell with mixed sources fall back to per-crop display instead of one shared line.
                 var decidedByValues = crops
                     .Select(c => c.VoteDetail != null ? $"{c.OwnershipSource} ({c.VoteDetail})" : c.OwnershipSource)
                     .Distinct()
