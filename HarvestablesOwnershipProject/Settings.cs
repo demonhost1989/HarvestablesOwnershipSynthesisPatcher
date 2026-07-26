@@ -55,7 +55,7 @@ namespace HarvestablesOwnership
         [JsonProperty]
         public List<string> ExcludeNameTerms { get; set; } =
         [
-            "Moss", "FX", "SlaughterfishEgg", "BYOH", "Nonharvestable",
+            "Moss", "FX", "SlaughterfishEgg", "BYOH",
         ];
 
         [DisplayName("Ore veins to patch")]
@@ -79,6 +79,11 @@ namespace HarvestablesOwnership
             "LocTypeMine",
         ];
 
+        [DisplayName("Theft warning message")]
+        [Description("Text shown to the player, via HOOreTheftScript, the first time they activate an ore vein owned by a faction they aren't a member of. The patcher creates a single shared Message record with this text and wires it onto every base record it swaps the ownership script onto, so nothing needs to be set up by hand in the CK.")]
+        [JsonProperty]
+        public string TheftWarningMessageText { get; set; } = "Mining ore belonging to someone else is considered theft.";
+
         [DisplayName("Plugins to exclude")]
         [Description("ExcludePlugins")]
         [JsonProperty]
@@ -92,7 +97,8 @@ namespace HarvestablesOwnership
         [JsonProperty]
         public List<string> ExcludeCellRules { get; set; } =
         [
-            "BYOH", "Helgen", "Goldenglow", "BlackBriarLodge", "POI", "Unused", "018AuriHouse", "3DNPC", 
+            "BYOH", "Helgen", "Goldenglow", "BlackBriarLodge", "GuardianStones", "POI", "Attack", "MMX", 
+            "Esbern", "DrelasCottage", "AbandonedHouse", "Thalmor", "CW", 
         ];
 
         [DisplayName("Location Types to exclude")]
@@ -108,10 +114,10 @@ namespace HarvestablesOwnership
         [DisplayName("Owners to exclude")]
         [Description("Substring match against the resolved Faction's EditorID. Runs after every tier in the priority chain has already picked a candidate owner: if that candidate matches one of these terms, the item is left unowned (same as if no tier had resolved anything) instead of being assigned to that faction. Use this to block specific factions (e.g. a generic crime faction picked up via Cell owner or the ownership vote) from ever ending up as an owner, regardless of which tier produced them.")]
         [JsonProperty]
-        public List<string> ExcludeOwnerFactionTerms { get; set; } =
-        [
-            "KhajiitCaravanFaction", "Soc_RM", "Player", 
-        ];
+        public List<string> ExcludeOwnerFactionTerms { get; set; } = 
+            [
+            "HagravenFaction", "CW", "DB11PenitusOculatusOnKatariahFaction", "Player", "Services", 
+            ];
 
         [DisplayName("Manual rule (plugins) — Priority 5")]
         [Description("harvestables placed by a matching plugin are assigned to the given faction. This runs once Overrides, Cell owner, Naming Convention, and Manual rule (cell) have all failed to find an owner. Only the Ownership vote (Priority 6, last resort) runs after it.")]

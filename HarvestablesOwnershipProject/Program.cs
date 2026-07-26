@@ -6,6 +6,7 @@ using Mutagen.Bethesda.Skyrim;
 using Mutagen.Bethesda.Synthesis;
 using Newtonsoft.Json;
 using Noggog;
+using System.Diagnostics;
 
 
 namespace HarvestablesOwnership
@@ -259,7 +260,7 @@ namespace HarvestablesOwnership
             return name; // nothing left to strip
         }
 
-        // Priority 3: "Naming Convention" — Town/Farm/Mill/Sawmill patterns against location/cell EditorID.
+        // Priority 4: "Naming Convention" — Town/Farm/Mill/Sawmill patterns against location/cell EditorID.
         private static IFactionGetter? TryGetNamingConventionFaction(
             ILocationGetter? location,
             Dictionary<string, IFactionGetter> factionsByEdid,
@@ -327,7 +328,46 @@ namespace HarvestablesOwnership
             return null;
         }
 
-        // Priority 1: "Overrides" — exact EditorID match (cell or location) against Settings.Overrides.
+        // Priority 1 (highest priority): "Plugin-local faction match" — instead of searching every
+        // faction in the load order, this restricts the search to factions ORIGINALLY DEFINED BY the
+        // same plugin that placed the item (e.g. a farm mod's own "Soc_MyFarm_Whiterun" faction for a
+        // crop that same mod placed in WhiterunExterior01), then fuzzy-matches the cell/location
+        // EditorID's root against those plugin-local factions' EditorIDs. This exists because a mod can
+        // define its own faction for a vanilla town (rather than reusing the vanilla "TownXFaction")
+        // and clearly intends its own items to go to its own faction — that should win over every other
+        // tier, including the vanilla Overrides list.
+        private static IFactionGetter? TryGetPluginLocalFactionMatch(
+            string pluginName,
+            ILocationGetter? location,
+            ICellGetter? cell,
+            Dictionary<string, List<IFactionGetter>> factionsByPlugin)
+        {
+            if (!factionsByPlugin.TryGetValue(pluginName, out var localFactions) || localFactions.Count == 0)
+                return null;
+
+            string?[] editorIds = [cell?.EditorID, location?.EditorID];
+
+            foreach (var edid in editorIds)
+            {
+                if (edid == null)
+                    continue;
+
+                foreach (var root in GetTownRootCandidates(edid))
+                {
+                    var match = localFactions.FirstOrDefault(f =>
+                        f.EditorID != null &&
+                        (f.EditorID.Contains(root, StringComparison.OrdinalIgnoreCase)
+                            || root.Contains(f.EditorID, StringComparison.OrdinalIgnoreCase)));
+
+                    if (match != null)
+                        return match;
+                }
+            }
+
+            return null;
+        }
+
+        // Priority 2: "Overrides" — exact EditorID match (cell or location) against Settings.Overrides.
         private static IFactionGetter? TryGetExactOverrideFaction(
             ILocationGetter? location,
             Dictionary<string, IFactionGetter> factionsByEdid,
@@ -348,7 +388,7 @@ namespace HarvestablesOwnership
             return null;
         }
 
-        // Priority 4: "Manual rule (cell)" — broad substring/fuzzy match over the same Settings.Overrides entries.
+        // Priority 5: "Manual rule (cell)" — broad substring/fuzzy match over the same Settings.Overrides entries.
         private static IFactionGetter? TryGetPartialOverrideFaction(
             ILocationGetter? location,
             Dictionary<string, IFactionGetter> factionsByEdid,
@@ -375,7 +415,7 @@ namespace HarvestablesOwnership
             return null;
         }
 
-        // Priority 2: "Cell owner" — the containing CELL record's own Owner (XOWN) field, if set to a Faction.
+        // Priority 3: "Cell owner" — the containing CELL record's own Owner (XOWN) field, if set to a Faction.
         private static IFactionGetter? TryGetCellOwnerFaction(
             ICellGetter? cell,
             ILinkCache<ISkyrimMod, ISkyrimModGetter> linkCache)
@@ -386,7 +426,7 @@ namespace HarvestablesOwnership
             return cell.Owner.TryResolve(linkCache) as IFactionGetter;
         }
 
-        // Priority 6: "Ownership vote" — pre-computed majority faction owner among the cell's already-owned objects; last resort.
+        // Priority 7: "Ownership vote" — pre-computed majority faction owner among the cell's already-owned objects; last resort.
         private static IFactionGetter? TryGetCellVoteFaction(
             ICellGetter? cell,
             Dictionary<FormKey, (IFactionGetter Faction, int WinningCount, int TotalVotes)> cellOwnershipVotes)
@@ -397,7 +437,7 @@ namespace HarvestablesOwnership
             return cellOwnershipVotes.TryGetValue(cell.FormKey, out var vote) ? vote.Faction : null;
         }
 
-        // Priority 5: "Manual rule (plugin)" — Settings.ManualPluginRules, partial plugin-name matching.
+        // Priority 6: "Manual rule (plugin)" — Settings.ManualPluginRules, partial plugin-name matching.
         private static IFactionGetter? TryGetManualPluginRuleFaction(
             string pluginName,
             Settings settings,
@@ -419,6 +459,13 @@ namespace HarvestablesOwnership
             return null;
         }
 
+        // Caches the resolved winning ICellGetter by cell FormKey. The chain-walk to find the immediate
+        // containing cell (following context.Parent pointers) is cheap in-memory traversal, but the
+        // linkCache.TryResolve<ICellGetter> call at the end is not — and many placed objects routinely
+        // share the same containing cell, so that resolve was being repeated redundantly for the same
+        // cell over and over. Caching by FormKey collapses it to once per unique cell in the load order.
+        private static readonly Dictionary<FormKey, ICellGetter?> ResolvedCellCache = new();
+
         // Walks up the placed-object's context chain to find its containing cell, re-resolved through the link cache.
         private static ICellGetter? FindContainingCell(
             IModContext<ISkyrimMod, ISkyrimModGetter, IPlacedObject, IPlacedObjectGetter> context,
@@ -429,10 +476,15 @@ namespace HarvestablesOwnership
             {
                 if (current.Record is ICellGetter cell)
                 {
-                    if (linkCache.TryResolve<ICellGetter>(cell.FormKey, out var winningCell))
-                        return winningCell;
+                    if (ResolvedCellCache.TryGetValue(cell.FormKey, out var cached))
+                        return cached;
 
-                    return cell;
+                    ICellGetter? resolved = linkCache.TryResolve<ICellGetter>(cell.FormKey, out var winningCell)
+                        ? winningCell
+                        : cell;
+
+                    ResolvedCellCache[cell.FormKey] = resolved;
+                    return resolved;
                 }
 
                 current = current.Parent;
@@ -441,34 +493,15 @@ namespace HarvestablesOwnership
             return null;
         }
 
-        // Priority 6 precompute: tallies, per cell, which faction owns the most already-owned placed objects.
-        private static Dictionary<FormKey, (IFactionGetter Faction, int WinningCount, int TotalVotes)> BuildCellOwnershipVotes(
-            IPatcherState<ISkyrimMod, ISkyrimModGetter> state)
+        // Priority 7 precompute (finalization only): given per-cell faction vote tallies already
+        // collected during the main single pass (see RunPatch), picks the winning faction per cell.
+        // This used to ALSO do its own full pass over the entire load order to build those tallies —
+        // that's now folded into RunPatch's single main pass instead, since WinningContextOverrides is
+        // the single most expensive operation in the patcher and was previously running twice per run.
+        private static Dictionary<FormKey, (IFactionGetter Faction, int WinningCount, int TotalVotes)> FinalizeCellOwnershipVotes(
+            Dictionary<FormKey, Dictionary<FormKey, int>> countsByCell,
+            ILinkCache<ISkyrimMod, ISkyrimModGetter> linkCache)
         {
-            var countsByCell = new Dictionary<FormKey, Dictionary<FormKey, int>>();
-
-            foreach (var context in state.LoadOrder.PriorityOrder.PlacedObject().WinningContextOverrides(state.LinkCache))
-            {
-                var placedObject = context.Record;
-
-                if (placedObject.Owner.IsNull)
-                    continue;
-
-                // Only Faction owners count toward the vote; NPC-owned placements are skipped.
-                if (placedObject.Owner.TryResolve(state.LinkCache) is not IFactionGetter ownerFaction)
-                    continue;
-
-                var cell = FindContainingCell(context, state.LinkCache);
-                if (cell == null)
-                    continue;
-
-                if (!countsByCell.TryGetValue(cell.FormKey, out var factionCounts))
-                    countsByCell[cell.FormKey] = factionCounts = new Dictionary<FormKey, int>();
-
-                factionCounts.TryGetValue(ownerFaction.FormKey, out var count);
-                factionCounts[ownerFaction.FormKey] = count + 1;
-            }
-
             var winners = new Dictionary<FormKey, (IFactionGetter Faction, int WinningCount, int TotalVotes)>();
             foreach (var (cellKey, factionCounts) in countsByCell)
             {
@@ -479,7 +512,7 @@ namespace HarvestablesOwnership
                 if (tied)
                     continue;
 
-                if (state.LinkCache.TryResolve<IFactionGetter>(ordered[0].Key, out var winningFaction))
+                if (linkCache.TryResolve<IFactionGetter>(ordered[0].Key, out var winningFaction))
                 {
                     var totalVotes = factionCounts.Values.Sum();
                     winners[cellKey] = (winningFaction, ordered[0].Value, totalVotes);
@@ -495,19 +528,72 @@ namespace HarvestablesOwnership
 
         public static void RunPatch(IPatcherState<ISkyrimMod, ISkyrimModGetter> state)
         {
+            var overallStopwatch = Stopwatch.StartNew();
+
             var settings = LoadRunSettings(state);
             PopulateOverrides(settings);
             FuzzyFactionMatchCache.Clear();
+            ResolvedCellCache.Clear();
 
+            var factionLookupStopwatch = Stopwatch.StartNew();
             var factionsByEdid = new Dictionary<string, IFactionGetter>(StringComparer.OrdinalIgnoreCase);
+            var factionsByPlugin = new Dictionary<string, List<IFactionGetter>>(StringComparer.OrdinalIgnoreCase);
             foreach (var fac in state.LoadOrder.PriorityOrder.Faction().WinningOverrides())
             {
                 if (fac.EditorID != null)
                     factionsByEdid.TryAdd(fac.EditorID, fac);
+
+                // Grouped by the plugin that ORIGINALLY defined the faction (FormKey.ModKey), not
+                // whichever plugin's override happens to be winning — that's what "factions available
+                // in the plugin" means for the Plugin-local faction match tier.
+                string originPlugin = fac.FormKey.ModKey.FileName;
+                if (!factionsByPlugin.TryGetValue(originPlugin, out var pluginFactions))
+                    factionsByPlugin[originPlugin] = pluginFactions = [];
+
+                pluginFactions.Add(fac);
+            }
+            factionLookupStopwatch.Stop();
+
+            // Prebuilt (not lazily resolved) map of base-record FormKey -> (Edid, IsOreVein), covering
+            // every Flora/Tree/Activator record in the load order matching the include term lists. This
+            // used to be filled lazily, once per unique base record, via
+            // LinkCache.TryResolve<IMajorRecordGetter> while scanning placed objects — a generic,
+            // type-agnostic resolve that's measurably much slower (confirmed via profiling on the sister
+            // ValuablesOwnership patcher: ~450 microseconds per call) than a typed group scan
+            // (state.LoadOrder.PriorityOrder.Flora().WinningOverrides(), etc.), the same pattern already
+            // used for Factions above. One scan per tracked type, done once, means the main placed-object
+            // pass below becomes a pure in-memory dictionary lookup with NO LinkCache calls needed for
+            // base-record resolution at all.
+            var baseRecordPrebuildStopwatch = Stopwatch.StartNew();
+            var baseRecordCropCache = new Dictionary<FormKey, (string Edid, bool IsOreVein)>();
+
+            foreach (var flora in state.LoadOrder.PriorityOrder.Flora().WinningOverrides())
+            {
+                if (flora.EditorID is string edid
+                    && settings.IncludeHarvestableTerms.Any(term => edid.Contains(term, StringComparison.OrdinalIgnoreCase)))
+                {
+                    baseRecordCropCache[flora.FormKey] = (edid, IsOreVein: false);
+                }
             }
 
-            // Priority 6's precomputed table: cell FormKey -> majority faction owner (absent if no data / a tie).
-            var cellOwnershipVotes = BuildCellOwnershipVotes(state);
+            foreach (var tree in state.LoadOrder.PriorityOrder.Tree().WinningOverrides())
+            {
+                if (tree.EditorID is string edid
+                    && settings.IncludeHarvestableTerms.Any(term => edid.Contains(term, StringComparison.OrdinalIgnoreCase)))
+                {
+                    baseRecordCropCache[tree.FormKey] = (edid, IsOreVein: false);
+                }
+            }
+
+            foreach (var activator in state.LoadOrder.PriorityOrder.Activator().WinningOverrides())
+            {
+                if (activator.EditorID is string edid
+                    && settings.IncludeOreVeinTerms.Any(term => edid.Contains(term, StringComparison.OrdinalIgnoreCase)))
+                {
+                    baseRecordCropCache[activator.FormKey] = (edid, IsOreVein: true);
+                }
+            }
+            baseRecordPrebuildStopwatch.Stop();
 
             var seen = new HashSet<FormKey>();
 
@@ -535,142 +621,222 @@ namespace HarvestablesOwnership
             ConsoleWriteLine("PATCHING...".PadLeft(35));
             PrintShortDivider();
 
-            // Memoizes the "is this Base record a matching crop or ore vein?" check by FormKey.
-            var baseRecordCropCache = new Dictionary<FormKey, (string Edid, bool IsOreVein)?>();
+            // Per-cell faction vote tallies (Priority 6 input) — built during the single pass below from
+            // EVERY already-owned placed object in the load order, regardless of crop/ore-vein type. This
+            // has to stay type-agnostic: a cell's ownership signal legitimately comes from furniture,
+            // doors, and other non-crop owned objects too, not just harvestables.
+            var countsByCell = new Dictionary<FormKey, Dictionary<FormKey, int>>();
 
-            // Memoizes the owning-faction resolution by (containing cell, plugin name), since it never depends on the specific crop.
-            var cellFactionResolutionCache = new Dictionary<(FormKey? CellKey, string Plugin), (IFactionGetter? Faction, string? Source, string? VoteDetail)>();
+            // Placed harvestable/ore-vein references that matched the prebuilt cache and aren't yet
+            // owned — collected here instead of processed immediately, because Priority 6 (Ownership
+            // vote) can't be resolved correctly until countsByCell is COMPLETE for every cell.
+            var candidates = new List<(IModContext<ISkyrimMod, ISkyrimModGetter, IPlacedObject, IPlacedObjectGetter> Context, string Edid, bool IsOreVein)>();
 
+            // Tracks which base records were ACTUALLY placed somewhere in the world (i.e. genuinely
+            // referenced by some PlacedObject), as opposed to merely existing in baseRecordCropCache
+            // because they matched the include terms. ApplyOreVeinTheftScript must only touch veins
+            // that are actually placed — scripting every matching Activator record in the whole load
+            // order, including ones nothing ever references, would be a real behavior change from the
+            // original lazy-resolution version.
+            var placedBaseFormKeys = new HashSet<FormKey>();
+
+            var findCellStopwatch = new Stopwatch();
+            int totalPlacedObjectsSeen = 0;
+
+            // ------------------------------------------------------------------
+            // Single full pass over the entire load order. WinningContextOverrides is by far the most
+            // expensive operation in this patcher — this used to run twice per patcher execution (once
+            // here, once in a separate BuildCellOwnershipVotes pass). Folding vote-tallying into this
+            // same pass means it now runs once, with vote data and candidate items collected together.
+            // ------------------------------------------------------------------
+            var pass1Stopwatch = Stopwatch.StartNew();
             foreach (var context in state.LoadOrder.PriorityOrder.PlacedObject().WinningContextOverrides(state.LinkCache))
             {
+                totalPlacedObjectsSeen++;
                 var placedObject = context.Record;
+
+                if (!seen.Add(placedObject.FormKey))
+                    continue;
+
+                bool isOwned = !placedObject.Owner.IsNull;
+
+                // Vote tally — type-agnostic, applies to every owned placed object (see comment above).
+                if (isOwned && placedObject.Owner.TryResolve(state.LinkCache) is IFactionGetter existingOwnerFaction)
+                {
+                    findCellStopwatch.Start();
+                    var voteCell = FindContainingCell(context, state.LinkCache);
+                    findCellStopwatch.Stop();
+
+                    if (voteCell != null)
+                    {
+                        if (!countsByCell.TryGetValue(voteCell.FormKey, out var factionCounts))
+                            countsByCell[voteCell.FormKey] = factionCounts = new Dictionary<FormKey, int>();
+
+                        factionCounts.TryGetValue(existingOwnerFaction.FormKey, out var voteCount);
+                        factionCounts[existingOwnerFaction.FormKey] = voteCount + 1;
+                    }
+                }
 
                 var baseFormKeyNullable = placedObject.Base.FormKeyNullable;
                 if (baseFormKeyNullable is not { } baseFormKey)
                     continue;
 
-                if (!baseRecordCropCache.TryGetValue(baseFormKey, out var cachedInfo))
-                {
-                    // Resolve the Base record once: accept only if it's a matching Flora/Tree crop or Activator ore vein.
-                    cachedInfo = null;
-                    if (state.LinkCache.TryResolve<IMajorRecordGetter>(baseFormKey, out var baseRecord)
-                        && baseRecord.EditorID is string resolvedEdid)
-                    {
-                        if (baseRecord is (IFloraGetter or ITreeGetter)
-                            && settings.IncludeHarvestableTerms.Any(term => resolvedEdid.Contains(term, StringComparison.OrdinalIgnoreCase)))
-                        {
-                            cachedInfo = (resolvedEdid, IsOreVein: false);
-                        }
-                        else if (baseRecord is IActivatorGetter
-                            && settings.IncludeOreVeinTerms.Any(term => resolvedEdid.Contains(term, StringComparison.OrdinalIgnoreCase)))
-                        {
-                            cachedInfo = (resolvedEdid, IsOreVein: true);
-                        }
-                    }
-
-                    baseRecordCropCache[baseFormKey] = cachedInfo;
-                }
-
-                if (cachedInfo is not { } matchedBase)
+                if (!baseRecordCropCache.TryGetValue(baseFormKey, out var matchedBase))
                     continue;
+
+                placedBaseFormKeys.Add(baseFormKey);
 
                 var cropEdid = matchedBase.Edid;
                 var isOreVein = matchedBase.IsOreVein;
 
-                if (!seen.Add(placedObject.FormKey))
-                    continue;
+                cropTypeCounts.TryGetValue(cropEdid, out var cropCount);
+                cropTypeCounts[cropEdid] = cropCount + 1;
 
-                var containingCell = FindContainingCell(context, state.LinkCache);
-
-                // Cells without an EditorID (e.g. many exterior cells) are treated as unknown.
-                var cellEdid = containingCell?.EditorID ?? "Unknown cell";
-
-                string pluginName = placedObject.FormKey.ModKey.FileName;
-
-                var displayCrop = cropEdid;
-
-                cropTypeCounts.TryGetValue(displayCrop, out var cropCount);
-                cropTypeCounts[displayCrop] = cropCount + 1;
-
-                if (!placedObject.Owner.IsNull)
+                if (isOwned)
                 {
                     alreadyOwnedCount++;
                     alreadyOwnedSet.Add(cropEdid);
                     continue;
                 }
 
-                // Partial-match cell exclusion.
-                bool cellExcluded = false;
-                foreach (var rule in settings.ExcludeCellRules)
+                candidates.Add((context, cropEdid, isOreVein));
+            }
+            pass1Stopwatch.Stop();
+
+            var voteFinalizeStopwatch = Stopwatch.StartNew();
+            var cellOwnershipVotes = FinalizeCellOwnershipVotes(countsByCell, state.LinkCache);
+            voteFinalizeStopwatch.Stop();
+
+            // Memoizes the owning-faction resolution by (containing cell, plugin name), since it never depends on the specific crop.
+            var cellFactionResolutionCache = new Dictionary<(FormKey? CellKey, string Plugin), (IFactionGetter? Faction, string? Source, string? VoteDetail)>();
+
+            // Memoizes per-cell work that used to be repeated for every crop in that cell: resolving
+            // the containing Location, resolving that Location's Keywords, the mine-location gate, and
+            // the ExcludeCellRules/ExcludeLocTypeRules checks. None of this depends on the item being
+            // patched — only on the cell — so a densely populated cell was redoing the exact same
+            // link-cache resolutions and rule scans once per crop instead of once per cell.
+            var cellContextCache = new Dictionary<FormKey, (ILocationGetter? Location, bool CellRuleExcluded, string? CellRuleMatched, bool InMineLocation, bool LocTypeExcluded, string? LocTypeRuleMatched)>();
+
+            // Memoizes plugin exclusion by plugin name — same idea, trivial cost either way, but free to cache.
+            var pluginExclusionCache = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+
+            // ------------------------------------------------------------------
+            // Second pass — over `candidates` only (an in-memory list, NOT another load-order
+            // traversal), so it's cheap regardless of how large the full load order is.
+            // ------------------------------------------------------------------
+            var pass2Stopwatch = Stopwatch.StartNew();
+            foreach (var (context, cropEdid, isOreVein) in candidates)
+            {
+                var placedObject = context.Record;
+
+                findCellStopwatch.Start();
+                var containingCell = FindContainingCell(context, state.LinkCache);
+                findCellStopwatch.Stop();
+
+                // Cells without an EditorID (e.g. many exterior cells) are treated as unknown.
+                var cellEdid = containingCell?.EditorID ?? "Unknown cell";
+                string pluginName = placedObject.FormKey.ModKey.FileName;
+
+                // Cell/Location resolution + cell-rule/mine-gate/loctype exclusion — cached per cell
+                // (see cellContextCache above), since none of this depends on the specific item.
+                // Dictionary<FormKey,...> requires a non-nullable key, so "no containing cell" (the
+                // rare "Unknown cell" case) uses FormKey.Null as a sentinel rather than an actual null.
+                var cellCacheKey = containingCell?.FormKey ?? FormKey.Null;
+                if (!cellContextCache.TryGetValue(cellCacheKey, out var cellCtx))
                 {
-                    if (RuleMatchesCell(rule, cellEdid))
+                    ILocationGetter? loc = containingCell?.Location.TryResolve(state.LinkCache);
+
+                    bool cellRuleExcluded = false;
+                    string? cellRuleMatched = null;
+                    foreach (var rule in settings.ExcludeCellRules)
                     {
-                        cellExcluded = true;
-                        if (!excludedCellsByRule.TryGetValue(rule, out var cellList))
-                            excludedCellsByRule[rule] = cellList = [];
-
-                        cellList.Add(cropEdid);
-                        break;
-                    }
-                }
-
-                // Location resolved once here for reuse below (loc-type exclusion, naming convention, mine gate).
-                var location = containingCell?.Location.TryResolve(state.LinkCache);
-
-                // Ore-vein-only "friendly mine" gate: skip unless the vein's Location carries a MineLocTypeKeywords keyword.
-                if (isOreVein && !cellExcluded)
-                {
-                    bool inMineLocation = location?.Keywords != null && location.Keywords
-                        .Select(k => k.TryResolve(state.LinkCache)?.EditorID)
-                        .Any(edid => edid != null && settings.MineLocTypeKeywords.Any(mineKeyword =>
-                            string.Equals(mineKeyword, edid, StringComparison.OrdinalIgnoreCase)));
-
-                    if (!inMineLocation)
-                    {
-                        excludedCount++;
-                        excludedSet.Add(cropEdid);
-                        AddSkip(skippedCropsByCell, cropEdid, pluginName, cellEdid, "Not in a mine location");
-                        continue;
-                    }
-                }
-
-                if (!cellExcluded && settings.ExcludeLocTypeRules.Count > 0)
-                {
-                    // Only match genuine LocType/LocSet keywords, to avoid unrelated keyword vocabulary (e.g. "WIDragonAttacked").
-                    var locPrefixes = new[] { "LocType", "LocSet" };
-
-                    var keywordEdids = location?.Keywords?
-                        .Select(k => k.TryResolve(state.LinkCache)?.EditorID)
-                        .Where(e => e != null &&
-                                    locPrefixes.Any(p => e.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
-                        .Select(e => e!)
-                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-                    if (keywordEdids != null && keywordEdids.Count > 0)
-                    {
-                        foreach (var rule in settings.ExcludeLocTypeRules)
+                        if (RuleMatchesCell(rule, cellEdid))
                         {
-                            if (keywordEdids.Any(k => k.Contains(rule, StringComparison.OrdinalIgnoreCase)))
-                            {
-                                cellExcluded = true;
-                                if (!excludedLocTypesByRule.TryGetValue(rule, out var list))
-                                    excludedLocTypesByRule[rule] = list = [];
+                            cellRuleExcluded = true;
+                            cellRuleMatched = rule;
+                            break;
+                        }
+                    }
 
-                                list.Add(cropEdid);
-                                break;
+                    // Resolve each keyword's EditorID exactly once, reused for both the mine gate and
+                    // the loctype exclusion check below (the original code resolved keywords twice,
+                    // separately, for each check — redundant even before this per-cell caching existed).
+                    var resolvedKeywordEdids = loc?.Keywords?
+                        .Select(k => k.TryResolve(state.LinkCache)?.EditorID)
+                        .Where(e => e != null)
+                        .Select(e => e!)
+                        .ToList() ?? [];
+
+                    bool inMineLocation = resolvedKeywordEdids.Any(edid => settings.MineLocTypeKeywords.Any(mineKeyword =>
+                        string.Equals(mineKeyword, edid, StringComparison.OrdinalIgnoreCase)));
+
+                    bool locTypeExcluded = false;
+                    string? locTypeRuleMatched = null;
+                    if (!cellRuleExcluded && settings.ExcludeLocTypeRules.Count > 0)
+                    {
+                        var locPrefixes = new[] { "LocType", "LocSet" };
+                        var filteredKeywordEdids = resolvedKeywordEdids
+                            .Where(e => locPrefixes.Any(p => e.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
+                            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                        if (filteredKeywordEdids.Count > 0)
+                        {
+                            foreach (var rule in settings.ExcludeLocTypeRules)
+                            {
+                                if (filteredKeywordEdids.Any(k => k.Contains(rule, StringComparison.OrdinalIgnoreCase)))
+                                {
+                                    locTypeExcluded = true;
+                                    locTypeRuleMatched = rule;
+                                    break;
+                                }
                             }
                         }
                     }
+
+                    cellCtx = (loc, cellRuleExcluded, cellRuleMatched, inMineLocation, locTypeExcluded, locTypeRuleMatched);
+                    cellContextCache[cellCacheKey] = cellCtx;
                 }
 
-                if (cellExcluded)
+                var location = cellCtx.Location;
+
+                if (cellCtx.CellRuleExcluded)
                 {
+                    if (!excludedCellsByRule.TryGetValue(cellCtx.CellRuleMatched!, out var cellList))
+                        excludedCellsByRule[cellCtx.CellRuleMatched!] = cellList = [];
+
+                    cellList.Add(cropEdid);
                     excludedCount++;
                     excludedSet.Add(cropEdid);
                     continue;
                 }
 
-                if (IsPluginExcluded(pluginName, settings))
+                // Ore-vein-only "friendly mine" gate: skip unless the vein's Location carries a MineLocTypeKeywords keyword.
+                if (isOreVein && !cellCtx.InMineLocation)
+                {
+                    excludedCount++;
+                    excludedSet.Add(cropEdid);
+                    AddSkip(skippedCropsByCell, cropEdid, pluginName, cellEdid, "Not in a mine location");
+                    continue;
+                }
+
+                if (cellCtx.LocTypeExcluded)
+                {
+                    if (!excludedLocTypesByRule.TryGetValue(cellCtx.LocTypeRuleMatched!, out var list))
+                        excludedLocTypesByRule[cellCtx.LocTypeRuleMatched!] = list = [];
+
+                    list.Add(cropEdid);
+                    excludedCount++;
+                    excludedSet.Add(cropEdid);
+                    continue;
+                }
+
+                if (!pluginExclusionCache.TryGetValue(pluginName, out var pluginExcluded))
+                {
+                    pluginExcluded = IsPluginExcluded(pluginName, settings);
+                    pluginExclusionCache[pluginName] = pluginExcluded;
+                }
+
+                if (pluginExcluded)
                 {
                     if (!excludedCropsByPlugin.TryGetValue(pluginName, out var list))
                         excludedCropsByPlugin[pluginName] = list = [];
@@ -702,6 +868,7 @@ namespace HarvestablesOwnership
                     // Precedence (highest to lowest); first tier to resolve a faction wins.
                     (Func<IFactionGetter?> Resolve, string Source)[] tiers =
                     [
+                        (() => TryGetPluginLocalFactionMatch(pluginName, location, containingCell, factionsByPlugin), "Plugin-local faction match"),
                         (() => TryGetExactOverrideFaction(location, factionsByEdid, containingCell), "Overrides"),
                         (() => TryGetCellOwnerFaction(containingCell, state.LinkCache), "Cell owner"),
                         (() => TryGetNamingConventionFaction(location, factionsByEdid, containingCell), "Naming Convention"),
@@ -772,14 +939,23 @@ namespace HarvestablesOwnership
                 patchedCount++;
                 patchedSet.Add(cropEdid);
 
-                patchedCropTypeCounts.TryGetValue(displayCrop, out var patchedCropCount);
-                patchedCropTypeCounts[displayCrop] = patchedCropCount + 1;
+                patchedCropTypeCounts.TryGetValue(cropEdid, out var patchedCropCount);
+                patchedCropTypeCounts[cropEdid] = patchedCropCount + 1;
 
                 if (!patchedCropsByCell.TryGetValue(cellEdid, out var patchedList))
                     patchedCropsByCell[cellEdid] = patchedList = [];
 
                 patchedList.Add((cropEdid, pluginName, townFaction.EditorID, ownershipSource ?? "Unknown", voteDetailLabel));
             }
+            pass2Stopwatch.Stop();
+            overallStopwatch.Stop();
+
+
+            var theftWarningMessage = state.PatchMod.Messages.AddNew();
+            theftWarningMessage.EditorID = "HO_TheftWarningMSG";
+            theftWarningMessage.Description = settings.TheftWarningMessageText;
+
+            ApplyOreVeinTheftScript(state, baseRecordCropCache, placedBaseFormKeys, theftWarningMessage);
 
             PrintReport(
                 settings,
@@ -795,6 +971,147 @@ namespace HarvestablesOwnership
                 alreadyOwnedCount,
                 missingFactionCount,
                 excludedCount);
+
+            // Timing instrumentation — kept in place (Stopwatches above still run; the cost is
+            // negligible) for future debugging, but the printed breakdown is disabled by default.
+            // Uncomment the call below to re-enable the "TIMING BREAKDOWN" console section.
+            // PrintTimingReport(
+            //     overallStopwatch,
+            //     factionLookupStopwatch,
+            //     baseRecordPrebuildStopwatch,
+            //     pass1Stopwatch,
+            //     voteFinalizeStopwatch,
+            //     pass2Stopwatch,
+            //     findCellStopwatch,
+            //     totalPlacedObjectsSeen,
+            //     candidates.Count,
+            //     baseRecordCropCache.Count);
+        }
+
+        // Prints a breakdown of where the run's time actually went. Temporary diagnostic output —
+        // safe to trim once the bottleneck is identified, but cheap enough (a handful of Stopwatches)
+        // to leave in indefinitely if useful for future tuning on other load orders.
+        private static void PrintTimingReport(
+            Stopwatch overall,
+            Stopwatch factionLookup,
+            Stopwatch baseRecordPrebuild,
+            Stopwatch pass1,
+            Stopwatch voteFinalize,
+            Stopwatch pass2,
+            Stopwatch findCell,
+            int totalPlacedObjectsSeen,
+            int candidateCount,
+            int uniqueBaseRecordCount)
+        {
+            _lastWasDivider = false;
+            PrintShortDivider();
+            ConsoleWriteLine("TIMING BREAKDOWN".PadLeft(36));
+            PrintShortDivider();
+
+            ConsoleWriteLine($"Total placed objects scanned: {totalPlacedObjectsSeen}");
+            ConsoleWriteLine($"Candidates carried into pass 2: {candidateCount}");
+            ConsoleWriteLine($"Valuable base records found (prebuild): {uniqueBaseRecordCount}");
+            PrintShortDivider();
+
+            ConsoleWriteLine($"Faction lookup build:          {factionLookup.ElapsedMilliseconds,8} ms");
+            ConsoleWriteLine($"Base-record prebuild (3 typed scans): {baseRecordPrebuild.ElapsedMilliseconds,8} ms  (replaces the old per-item LinkCache.TryResolve<IMajorRecordGetter> calls)");
+            ConsoleWriteLine($"Pass 1 (full load-order scan): {pass1.ElapsedMilliseconds,8} ms  (now a pure dictionary lookup per item, no LinkCache resolve)");
+            ConsoleWriteLine($"Vote finalization:              {voteFinalize.ElapsedMilliseconds,8} ms");
+            ConsoleWriteLine($"Pass 2 (candidate processing): {pass2.ElapsedMilliseconds,8} ms");
+            ConsoleWriteLine($"Cell-finding (combined, both passes): {findCell.ElapsedMilliseconds,8} ms  (included within Pass 1 and Pass 2 above, broken out separately since it's a suspect)");
+            PrintShortDivider();
+            ConsoleWriteLine($"TOTAL:                          {overall.ElapsedMilliseconds,8} ms");
+
+            PrintDivider();
+        }
+
+
+        private const string TheftScriptName = "HOOreTheftScript";
+        private const string OrePropertyName = "Ore";
+        private const string TheftWarningPropertyName = "HO_TheftWarningMSG";
+
+        private static readonly string[] MirroredMiningPropertyNames =
+        [
+            "ResourceCount", "ResourceCountTotal", "StrikesBeforeCollection",
+            "AttackStrikesBeforeCollection", "MineOreToolsList",
+        ];
+
+        private static void ApplyOreVeinTheftScript(
+            IPatcherState<ISkyrimMod, ISkyrimModGetter> state,
+            Dictionary<FormKey, (string Edid, bool IsOreVein)> baseRecordCropCache,
+            HashSet<FormKey> placedBaseFormKeys,
+            IMessageGetter theftWarningMessage)
+        {
+            int added = 0;
+            int skippedNoOreProperty = 0;
+            int skippedResolveFailed = 0;
+            int oreVeinBaseRecordsConsidered = 0;
+
+            foreach (var (formKey, info) in baseRecordCropCache)
+            {
+                if (!info.IsOreVein)
+                    continue;
+
+                // baseRecordCropCache is now prebuilt from every matching Flora/Tree/Activator record in
+                // the load order (see RunPatch), which includes records that might never be referenced
+                // by any PlacedObject. Only script veins that are ACTUALLY placed somewhere in the world
+                // — scripting unplaced records would be a silent behavior change from the original
+                // lazy-resolution version, which only ever populated this cache for referenced bases.
+                if (!placedBaseFormKeys.Contains(formKey))
+                    continue;
+
+                oreVeinBaseRecordsConsidered++;
+
+                if (!state.LinkCache.TryResolve<IActivatorGetter>(formKey, out var baseRecord))
+                {
+                    skippedResolveFailed++;
+                    continue;
+                }
+
+                var allExistingProperties = baseRecord.VirtualMachineAdapter?.Scripts
+                    .SelectMany(s => s.Properties)
+                    .ToList() ?? [];
+
+                var oreProperty = allExistingProperties
+                    .OfType<IScriptObjectPropertyGetter>()
+                    .FirstOrDefault(p => string.Equals(p.Name, OrePropertyName, StringComparison.OrdinalIgnoreCase));
+
+                if (oreProperty == null)
+                {
+                    skippedNoOreProperty++;
+                    continue;
+                }
+
+                var activatorOverride = state.PatchMod.Activators.GetOrAddAsOverride(baseRecord);
+                var vmadOverride = activatorOverride.VirtualMachineAdapter!;
+
+                List<ScriptProperty> newPropertiesList = [oreProperty.DeepCopy()];
+
+                foreach (var propertyName in MirroredMiningPropertyNames)
+                {
+                    var existingProperty = allExistingProperties
+                        .FirstOrDefault(p => string.Equals(p.Name, propertyName, StringComparison.OrdinalIgnoreCase));
+
+                    if (existingProperty != null)
+                        newPropertiesList.Add(existingProperty.DeepCopy());
+                }
+
+                newPropertiesList.Add(new ScriptObjectProperty
+                {
+                    Name = TheftWarningPropertyName,
+                    Object = new FormLinkNullable<ISkyrimMajorRecordGetter>(theftWarningMessage.FormKey),
+                });
+
+                vmadOverride.Scripts.Add(new ScriptEntry
+                {
+                    Name = TheftScriptName,
+                    Properties = new ExtendedList<ScriptProperty>(newPropertiesList),
+                });
+
+                added++;
+            }
+
+            ConsoleWriteLine($"Ore vein theft script: {oreVeinBaseRecordsConsidered} distinct ore vein base record(s) considered -> {added} got {TheftScriptName} added, {skippedNoOreProperty} skipped (no readable Ore property found on any existing script), {skippedResolveFailed} skipped (failed to re-resolve as Activator).");
         }
 
         // Loads (or generates) the settings file used for this run.
@@ -1063,7 +1380,7 @@ namespace HarvestablesOwnership
 
             foreach (var entry in combined.OrderByDescending(e => e.Count))
             {
-                ConsoleWriteLine($"The rule: {entry.Rule} ({entry.Type}) excluded {entry.Count} crops");
+                ConsoleWriteLine($"The rule: {entry.Rule} ({entry.Type}) excluded {entry.Count} harvestables");
             }
 
             _lastWasDivider = false;
