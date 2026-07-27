@@ -799,6 +799,20 @@ namespace HarvestablesOwnership
 
                 var location = cellCtx.Location;
 
+                // Display-only label for report grouping — falls back to the Location's EditorID when
+                // the Cell itself has none (very common for unnamed exterior wilderness cells in
+                // Skyrim), so "Unknown cell" only appears when there's truly nothing to show. Tagged
+                // with which record the name actually came from, since a Cell name and a Location name
+                // aren't the same thing and it wasn't always obvious which one was being shown. This is
+                // deliberately separate from cellEdid above, which still drives ExcludeCellRules
+                // matching unchanged — using the Location fallback there too would silently change
+                // which items get excluded, not just how they're labeled in the report.
+                var cellDisplayLabel = containingCell?.EditorID != null
+                    ? $"{containingCell.EditorID} [Cell]"
+                    : location?.EditorID != null
+                        ? $"{location.EditorID} [Location]"
+                        : "Unknown cell";
+
                 if (cellCtx.CellRuleExcluded)
                 {
                     if (!excludedCellsByRule.TryGetValue(cellCtx.CellRuleMatched!, out var cellList))
@@ -815,7 +829,7 @@ namespace HarvestablesOwnership
                 {
                     excludedCount++;
                     excludedSet.Add(cropEdid);
-                    AddSkip(skippedCropsByCell, cropEdid, pluginName, cellEdid, "Not in a mine location");
+                    AddSkip(skippedCropsByCell, cropEdid, pluginName, cellDisplayLabel, "Not in a mine location");
                     continue;
                 }
 
@@ -910,7 +924,7 @@ namespace HarvestablesOwnership
                     missingFactionCount++;
                     missingFactionSet.Add(cropEdid);
 
-                    AddSkip(skippedCropsByCell, cropEdid, pluginName, cellEdid, "No suitable owner");
+                    AddSkip(skippedCropsByCell, cropEdid, pluginName, cellDisplayLabel, "No suitable owner");
                     continue;
                 }
 
@@ -929,7 +943,7 @@ namespace HarvestablesOwnership
                     excludedCount++;
                     excludedSet.Add(cropEdid);
 
-                    AddSkip(skippedCropsByCell, cropEdid, pluginName, cellEdid, $"Owner faction excluded ({townFaction.EditorID})");
+                    AddSkip(skippedCropsByCell, cropEdid, pluginName, cellDisplayLabel, $"Owner faction excluded ({townFaction.EditorID})");
                     continue;
                 }
 
@@ -942,8 +956,8 @@ namespace HarvestablesOwnership
                 patchedCropTypeCounts.TryGetValue(cropEdid, out var patchedCropCount);
                 patchedCropTypeCounts[cropEdid] = patchedCropCount + 1;
 
-                if (!patchedCropsByCell.TryGetValue(cellEdid, out var patchedList))
-                    patchedCropsByCell[cellEdid] = patchedList = [];
+                if (!patchedCropsByCell.TryGetValue(cellDisplayLabel, out var patchedList))
+                    patchedCropsByCell[cellDisplayLabel] = patchedList = [];
 
                 patchedList.Add((cropEdid, pluginName, townFaction.EditorID, ownershipSource ?? "Unknown", voteDetailLabel));
             }
